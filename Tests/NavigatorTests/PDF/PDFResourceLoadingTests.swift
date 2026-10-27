@@ -110,6 +110,40 @@ class PDFResourceLoadingTests: XCTestCase {
         XCTAssertEqual(response.status, .notFound)
     }
 
+    func testMissingLocalFileNotifiesDelegate() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".pdf")
+        let resource = FileResource(file: try XCTUnwrap(FileURL(url: url)))
+
+        try await assertMissingLocalFileReported(resource)
+    }
+
+    func testFileRemovedAfterLengthWasCachedNotifiesDelegate() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".pdf")
+        try makePDF().write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let resource = FileResource(file: try XCTUnwrap(FileURL(url: url)))
+        let length = try await resource.estimatedLength().get()
+        XCTAssertNotNil(length)
+        try FileManager.default.removeItem(at: url)
+
+        try await assertMissingLocalFileReported(resource)
+    }
+
+    private func assertMissingLocalFileReported(_ resource: FileResource) async throws {
+        let delegate = ResourceFailureDelegate()
+        let href = try XCTUnwrap(RelativeURL(path: "publication.pdf"))
+        let navigator = try makeNavigator(resource: resource, href: href, delegate: delegate)
+
+        let document = await navigator.makeDocument(at: href)
+
+        XCTAssertNil(document)
+        XCTAssertEqual(delegate.failures.count, 1)
+        XCTAssertEqual(delegate.failures.first?.0, href)
+        guard case .access(.fileSystem) = delegate.failures.first?.1 else {
+            return XCTFail("Missing local PDF must report its filesystem error")
+        }
+    }
+
     private func makeNavigator(resource: Resource?, href: RelativeURL, delegate: PDFNavigatorDelegate) throws -> PDFNavigatorViewController {
         let container: Container
         if let resource = resource {

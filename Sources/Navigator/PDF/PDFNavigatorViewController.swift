@@ -517,9 +517,24 @@ open class PDFNavigatorViewController:
         // the publication so content protection remains responsible for their bytes.
         let document: PDFKit.PDFDocument?
         if let file = resource.sourceURL?.fileURL {
+            let length = await resource.estimatedLength()
+            guard !Task.isCancelled else {
+                return nil
+            }
+            if case let .failure(error) = length {
+                onFailure(error)
+                return nil
+            }
             document = await Task.detached(priority: .userInitiated) {
                 PDFDocument(url: file.url)
             }.value
+            if document == nil {
+                // A Resource may cache its length before the file disappears.
+                let probe = await FileResource(file: file).read(range: 0 ..< 1)
+                if !Task.isCancelled, case let .failure(error) = probe {
+                    onFailure(error)
+                }
+            }
         } else {
             let result = await resource.read()
             guard !Task.isCancelled else {
