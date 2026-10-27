@@ -485,15 +485,34 @@ open class PDFNavigatorViewController:
         return true
     }
 
-    private func makeDocument<HREF: URLConvertible>(at href: HREF) async -> PDFKit.PDFDocument? {
+    func makeDocument<HREF: URLConvertible>(at href: HREF) async -> PDFKit.PDFDocument? {
         guard let resource = publication.get(href) else {
+            if let url = publicationBaseURL.resolve(href)?.anyURL.httpURL {
+                let response = HTTPResponse(
+                    request: HTTPRequest(url: url), url: url, status: .notFound,
+                    headers: [:], mediaType: nil, body: nil
+                )
+                didFailToLoadResource(at: href, withError: .access(.http(.errorResponse(response))))
+            }
             return nil
         }
 
-        return await Self.makeDocument(from: resource)
+        return await Self.makeDocument(from: resource) { [weak self] error in
+            self?.didFailToLoadResource(at: href, withError: error)
+        }
     }
 
-    static func makeDocument(from resource: Resource) async -> PDFKit.PDFDocument? {
+    private func didFailToLoadResource<HREF: URLConvertible>(at href: HREF, withError error: ReadError) {
+        guard !Task.isCancelled, let href = href.anyURL.relativeURL else {
+            return
+        }
+        delegate?.navigator(self, didFailToLoadResourceAt: href, withError: error)
+    }
+
+    static func makeDocument(
+        from resource: Resource,
+        onFailure: (ReadError) -> Void = { _ in }
+    ) async -> PDFKit.PDFDocument? {
         // Keep local files file-backed. Transformed resources must be read through
         // the publication so content protection remains responsible for their bytes.
         let document: PDFKit.PDFDocument?
@@ -502,7 +521,14 @@ open class PDFNavigatorViewController:
                 PDFDocument(url: file.url)
             }.value
         } else {
-            guard let data = try? await resource.read().get(), !Task.isCancelled else {
+            let result = await resource.read()
+            guard !Task.isCancelled else {
+                return nil
+            }
+            guard case let .success(data) = result else {
+                if case let .failure(error) = result {
+                    onFailure(error)
+                }
                 return nil
             }
             document = await Task.detached(priority: .userInitiated) {
