@@ -457,7 +457,7 @@ open class PDFNavigatorViewController:
         }
 
         if currentResourceIndex != index {
-            guard let document = await makeDocument(at: url) else {
+            guard let document = await makeDocument(at: href) else {
                 log(.error, "Can't open PDF document at \(url)")
                 return false
             }
@@ -485,11 +485,31 @@ open class PDFNavigatorViewController:
         return true
     }
 
-    private func makeDocument(at url: AbsoluteURL) async -> PDFKit.PDFDocument? {
-        let task = Task.detached(priority: .userInitiated) {
-            PDFDocument(url: url.url)
+    private func makeDocument<HREF: URLConvertible>(at href: HREF) async -> PDFKit.PDFDocument? {
+        guard let resource = publication.get(href) else {
+            return nil
         }
-        return await task.value
+
+        return await Self.makeDocument(from: resource)
+    }
+
+    static func makeDocument(from resource: Resource) async -> PDFKit.PDFDocument? {
+        // Keep local files file-backed. Transformed resources must be read through
+        // the publication so content protection remains responsible for their bytes.
+        let document: PDFKit.PDFDocument?
+        if let file = resource.sourceURL?.fileURL {
+            document = await Task.detached(priority: .userInitiated) {
+                PDFDocument(url: file.url)
+            }.value
+        } else {
+            guard let data = try? await resource.read().get(), !Task.isCancelled else {
+                return nil
+            }
+            document = await Task.detached(priority: .userInitiated) {
+                PDFDocument(data: data)
+            }.value
+        }
+        return Task.isCancelled ? nil : document
     }
 
     /// Updates the scale factors to match the currently visible pages.
